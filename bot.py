@@ -3,8 +3,6 @@ import logging
 import sqlite3
 import os
 import random
-import csv
-import io
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -12,13 +10,16 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.exceptions import TelegramConflictError
 from aiohttp import web, ClientSession
 
 # --- КОНФИГУРАЦИЯ ---
 API_TOKEN = "7799961207:AAEPNytcZZ8iseximsxmSDD6j-IrSW25hD8"
-# Замените на ваш file_id после получения его от бота
+# Замените на ваш file_id после отправки фото боту @userinfobot или самому себе
 MAIN_MENU_PHOTO = "AgACAgIAAxkBAAEY..." 
+
+# URL вашего приложения (например, https://my-finance-bot.onrender.com)
+# Нужно указать в переменных окружения на хостинге как APP_URL
+APP_URL = os.environ.get("APP_URL", "")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,14 +49,11 @@ DB_PATH = 'finance_manager.db'
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Транзакции
     cursor.execute('''CREATE TABLE IF NOT EXISTS transactions 
                       (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, type TEXT, category TEXT, 
                        amount REAL, date TEXT, month_year TEXT, comment TEXT)''')
-    # Лимиты
     cursor.execute('''CREATE TABLE IF NOT EXISTS user_limits 
                       (user_id INTEGER PRIMARY KEY, monthly_limit REAL)''')
-    # Подписки
     cursor.execute('''CREATE TABLE IF NOT EXISTS subscriptions 
                       (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, amount REAL, day INTEGER)''')
     conn.commit()
@@ -67,30 +65,34 @@ init_db()
 def get_current_month():
     return datetime.now().strftime("%m.%Y")
 
-async def get_exchange_rates():
-    """Запрос курсов валют ЦБ РФ"""
-    try:
-        async with ClientSession() as session:
-            async with session.get("https://www.cbr-xml-daily.ru/daily_json.js", timeout=5) as resp:
-                data = await resp.json()
-                usd = data['Valute']['USD']['Value']
-                eur = data['Valute']['EUR']['Value']
-                return f"💵 USD: {usd:.2f}₽ | 💶 EUR: {eur:.2f}₽"
-    except Exception as e:
-        logger.error(f"Ошибка курсов: {e}")
-        return "🏦 Курсы ЦБ временно недоступны"
-
 def generate_progress_bar(percent, length=10):
     percent = max(0, min(100, percent))
     filled = int(length * percent / 100)
     return '🔵' * filled + '⚪' * (length - filled)
+
+# --- АНТИ-СОН (KEEP ALIVE) ---
+async def keep_alive():
+    """Фоновая задача: пингует URL каждые 10 минут, чтобы сервер не уснул"""
+    if not APP_URL:
+        logger.warning("KEEP_ALIVE: APP_URL не настроен. Анти-сон не работает.")
+        return
+        
+    await asyncio.sleep(30) # Небольшая пауза перед первым пингом
+    while True:
+        try:
+            async with ClientSession() as session:
+                async with session.get(APP_URL, timeout=10) as resp:
+                    if resp.status == 200:
+                        logger.info("KEEP_ALIVE: Пинг успешен. Бот бодрствует.")
+        except Exception as e:
+            logger.error(f"KEEP_ALIVE: Ошибка пинга: {e}")
+        await asyncio.sleep(600) # 10 минут
 
 # --- ГЛАВНОЕ МЕНЮ ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
-    rates = await get_exchange_rates()
     
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
@@ -105,13 +107,11 @@ async def start_cmd(message: types.Message, state: FSMContext):
                 types.InlineKeyboardButton(text="🎯 Лимит", callback_data="set_limit_start"))
     builder.row(types.InlineKeyboardButton(text="🔍 Детализация", callback_data="show_misc_details"),
                 types.InlineKeyboardButton(text="📜 Архив", callback_data="show_archive"))
-    builder.row(types.InlineKeyboardButton(text="📂 Экспорт CSV", callback_data="export_csv"),
-                types.InlineKeyboardButton(text="🗑 Удалить", callback_data="manage_delete"))
-    builder.row(types.InlineKeyboardButton(text="🕹 Мини-игра", callback_data="play_game"))
+    builder.row(types.InlineKeyboardButton(text="🗑 Удалить", callback_data="manage_delete"),
+                types.InlineKeyboardButton(text="🕹 Мини-игра", callback_data="play_game"))
     
     caption = (
-        f"🥷🏿 <b>Finance Pro [Ultimate v3.1]</b>\n\n"
-        f"📈 <b>Курсы:</b> {rates}\n"
+        f"🥷🏿 <b>Finance Pro [v3.4]</b>\n\n"
         f"🎯 <b>Лимит:</b> {user_limit if user_limit > 0 else 'не задан'}₽\n"
         f"📅 <b>Месяц:</b> {get_current_month()}\n\n"
         "Выберите действие в меню:"
@@ -122,7 +122,7 @@ async def start_cmd(message: types.Message, state: FSMContext):
     except Exception:
         await message.answer(caption, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-# --- ЛОГИКА ДОБАВЛЕНИЯ ТРАНЗАКЦИЙ ---
+# --- ЛОГИКА ТРАНЗАКЦИЙ ---
 @dp.callback_query(F.data == "add_transaction")
 async def add_tx_start(cb: types.CallbackQuery, state: FSMContext):
     builder = InlineKeyboardBuilder()
@@ -156,9 +156,8 @@ async def add_tx_amt(message: types.Message, state: FSMContext):
         amount = float(message.text.replace(",", "."))
         if amount <= 0: raise ValueError
         await state.update_data(amount=amount)
-        
         data = await state.get_data()
-        # Если категория Прочее/Другое или сумма большая - просим коммент
+        
         if any(x in data['category'] for x in ["Прочее", "Другое"]) or amount > 5000:
             await state.set_state(FinanceState.entering_comment)
             await message.answer("📝 Введите краткое описание:")
@@ -183,12 +182,11 @@ async def save_transaction(message: types.Message, state: FSMContext):
             "INSERT INTO transactions (user_id, type, category, amount, date, month_year, comment) VALUES (?,?,?,?,?,?,?)",
             (uid, d['transaction_type'], d['category'], d['amount'], now, month, d.get('comment', '—'))
         )
-    
     await state.clear()
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 В меню", callback_data="to_main"))
-    await message.answer(f"✅ Успешно сохранено!\n{d['category']}: {d['amount']}₽", reply_markup=builder.as_markup())
+    await message.answer(f"✅ Успешно сохранено!\n{d['category']}: {d['amount']}₽", 
+                         reply_markup=InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 В меню", callback_data="to_main")).as_markup())
 
-# --- СТАТИСТИКА И АНАЛИТИКА ---
+# --- СТАТИСТИКА ---
 @dp.callback_query(F.data == "show_stats")
 async def show_stats(cb: types.CallbackQuery):
     uid, month = cb.from_user.id, get_current_month()
@@ -213,8 +211,7 @@ async def show_stats(cb: types.CallbackQuery):
         for cat, val in cats:
             res += f"• {cat}: {val:.0f}₽ ({(val/exp*100):.1f}%)\n"
             
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await cb.message.answer(res, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await cb.message.answer(res, reply_markup=InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main")).as_markup(), parse_mode="HTML")
     await cb.answer()
 
 @dp.callback_query(F.data == "show_misc_details")
@@ -224,15 +221,12 @@ async def show_misc(cb: types.CallbackQuery):
         c = conn.cursor()
         c.execute("SELECT category, amount, comment, date FROM transactions WHERE user_id=? AND month_year=? AND (category LIKE '%Прочее%' OR category LIKE '%Другое%')", (uid, month))
         items = c.fetchall()
-    
     res = "🔍 <b>Детализация 'Прочее':</b>\n\n" if items else "В 'Прочее' пока пусто."
-    for cat, amt, comm, dt in items:
-        res += f"📅 {dt}\n💰 {amt}₽ — <i>{comm}</i>\n\n"
-    
+    for cat, amt, comm, dt in items: res += f"📅 {dt}\n💰 {amt}₽ — <i>{comm}</i>\n\n"
     await cb.message.answer(res, reply_markup=InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main")).as_markup(), parse_mode="HTML")
     await cb.answer()
 
-# --- ЛИМИТЫ, ПОДПИСКИ, ЭКСПОРТ ---
+# --- ЛИМИТЫ И ПОДПИСКИ ---
 @dp.callback_query(F.data == "set_limit_start")
 async def set_limit_start(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(FinanceState.setting_limit)
@@ -264,7 +258,6 @@ async def manage_subs(cb: types.CallbackQuery):
         for sid, name, amt, day in subs:
             res += f"• {day} число: <b>{name}</b> — {amt}₽\n"
             builder.row(types.InlineKeyboardButton(text=f"❌ Удалить {name}", callback_data=f"delsub_{sid}"))
-    
     builder.row(types.InlineKeyboardButton(text="➕ Добавить", callback_data="add_sub_start"),
                 types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
     await cb.message.answer(res, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -273,7 +266,7 @@ async def manage_subs(cb: types.CallbackQuery):
 @dp.callback_query(F.data == "add_sub_start")
 async def add_sub_start(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(FinanceState.adding_subscription)
-    await cb.message.answer("Введите название и сумму через пробел\n(Например: <code>Связь 500</code>):", parse_mode="HTML")
+    await cb.message.answer("Введите название и сумму через пробел:", parse_mode="HTML")
     await cb.answer()
 
 @dp.message(FinanceState.adding_subscription)
@@ -287,32 +280,12 @@ async def add_sub_finish(m: types.Message, state: FSMContext):
         await m.answer(f"✅ Подписка '{name}' добавлена.")
     except: await m.answer("⚠️ Ошибка. Формат: Название Сумма")
 
-@dp.callback_query(F.data == "export_csv")
-async def export_csv(cb: types.CallbackQuery):
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT date, type, category, amount, comment FROM transactions WHERE user_id=?", (cb.from_user.id,))
-        rows = c.fetchall()
-    
-    if not rows:
-        await cb.answer("Данных нет.")
-        return
-
-    si = io.StringIO()
-    cw = csv.writer(si)
-    cw.writerow(['Дата', 'Тип', 'Категория', 'Сумма', 'Комментарий'])
-    cw.writerows(rows)
-    buf = si.getvalue().encode('utf-8-sig')
-    await cb.message.answer_document(types.BufferedInputFile(buf, filename="report.csv"), caption="📊 Ваш финансовый отчет.")
-    await cb.answer()
-
-# --- МИНИ-ИГРА СЛОТЫ ---
+# --- СЛОТЫ ---
 @dp.callback_query(F.data == "play_game")
 async def play_game(cb: types.CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🎰 Крутить!", callback_data="spin_slots"),
-                types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await cb.message.answer("🎰 <b>Finance Slots</b>\nИгра на удачу!", reply_markup=builder.as_markup(), parse_mode="HTML")
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🎰 Крутить!", callback_data="spin_slots"),
+                                          types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
+    await cb.message.answer("🎰 <b>Finance Slots</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
     await cb.answer()
 
 @dp.callback_query(F.data == "spin_slots")
@@ -331,18 +304,15 @@ async def manage_del(cb: types.CallbackQuery):
         c = conn.cursor()
         c.execute("SELECT id, category, amount FROM transactions WHERE user_id=? ORDER BY id DESC LIMIT 5", (cb.from_user.id,))
         items = c.fetchall()
-    
     builder = InlineKeyboardBuilder()
-    for tid, cat, amt in items:
-        builder.row(types.InlineKeyboardButton(text=f"❌ {amt}₽ - {cat}", callback_data=f"del_{tid}"))
+    for tid, cat, amt in items: builder.row(types.InlineKeyboardButton(text=f"❌ {amt}₽ - {cat}", callback_data=f"del_{tid}"))
     builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
     await cb.message.edit_text("Что удалить (последние 5)?", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith("del_"))
 async def process_del(cb: types.CallbackQuery):
     tid = cb.data.split("_")[1]
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.cursor().execute("DELETE FROM transactions WHERE id=?", (tid,))
+    with sqlite3.connect(DB_PATH) as conn: conn.cursor().execute("DELETE FROM transactions WHERE id=?", (tid,))
     await cb.answer("Удалено!")
     await manage_del(cb)
 
@@ -352,7 +322,6 @@ async def show_archive(cb: types.CallbackQuery):
         c = conn.cursor()
         c.execute("SELECT DISTINCT month_year FROM transactions WHERE user_id=? ORDER BY id DESC", (cb.from_user.id,))
         months = [r[0] for r in c.fetchall()]
-    
     builder = InlineKeyboardBuilder()
     for m in months: builder.row(types.InlineKeyboardButton(text=f"📂 {m}", callback_data=f"arch_{m}"))
     builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
@@ -377,14 +346,23 @@ async def to_main(cb: types.CallbackQuery, state: FSMContext):
     except: pass
 
 async def start_web():
+    """Веб-сервер для прохождения Port Check на хостингах"""
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="OK"))
+    app.router.add_get("/", lambda r: web.Response(text="Бот активен!"))
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
+    port = int(os.environ.get("PORT", 10000))
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    logger.info(f"Веб-сервер запущен на порту {port}")
 
 async def main():
+    # 1. Запуск веб-сервера
     await start_web()
+    
+    # 2. Запуск фонового пинга "Анти-сон"
+    asyncio.create_task(keep_alive())
+    
+    # 3. Запуск Telegram бота
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
