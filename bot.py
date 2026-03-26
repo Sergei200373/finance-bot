@@ -12,13 +12,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web, ClientSession
 
-# --- КОНФИГУРАЦИЯ ---
+# --- CONFIGURATION ---
 API_TOKEN = "7799961207:AAEPNytcZZ8iseximsxmSDD6j-IrSW25hD8"
-# Замените на ваш file_id после отправки фото боту @userinfobot или самому себе
+# Используйте корректный file_id фото или оставьте заглушку
 MAIN_MENU_PHOTO = "AgACAgIAAxkBAAEY..." 
 
-# URL вашего приложения (например, https://my-finance-bot.onrender.com)
-# Нужно указать в переменных окружения на хостинге как APP_URL
+# URL приложения для механизма анти-сна (Keep Alive)
 APP_URL = os.environ.get("APP_URL", "")
 
 logging.basicConfig(
@@ -72,31 +71,31 @@ def generate_progress_bar(percent, length=10):
 
 # --- АНТИ-СОН (KEEP ALIVE) ---
 async def keep_alive():
-    """Фоновая задача: пингует URL каждые 10 минут, чтобы сервер не уснул"""
     if not APP_URL:
-        logger.warning("KEEP_ALIVE: APP_URL не настроен. Анти-сон не работает.")
+        logger.warning("KEEP_ALIVE: APP_URL не задан. Анти-сон отключен.")
         return
         
-    await asyncio.sleep(30) # Небольшая пауза перед первым пингом
+    await asyncio.sleep(30)
     while True:
         try:
             async with ClientSession() as session:
                 async with session.get(APP_URL, timeout=10) as resp:
                     if resp.status == 200:
-                        logger.info("KEEP_ALIVE: Пинг успешен. Бот бодрствует.")
+                        logger.info("KEEP_ALIVE: Пинг успешен.")
         except Exception as e:
             logger.error(f"KEEP_ALIVE: Ошибка пинга: {e}")
-        await asyncio.sleep(600) # 10 минут
+        await asyncio.sleep(600)
 
 # --- ГЛАВНОЕ МЕНЮ ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
-    uid = message.from_user.id
-    
+    await send_main_menu(message.chat.id, message.from_user.id)
+
+async def send_main_menu(chat_id: int, user_id: int):
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
-        c.execute("SELECT monthly_limit FROM user_limits WHERE user_id=?", (uid,))
+        c.execute("SELECT monthly_limit FROM user_limits WHERE user_id=?", (user_id,))
         res_limit = c.fetchone()
         user_limit = res_limit[0] if res_limit else 0
 
@@ -111,25 +110,26 @@ async def start_cmd(message: types.Message, state: FSMContext):
                 types.InlineKeyboardButton(text="🕹 Мини-игра", callback_data="play_game"))
     
     caption = (
-        f"🥷🏿 <b>Finance Pro [v3.4]</b>\n\n"
+        f"🥷🏿 <b>Finance Pro [v3.5]</b>\n\n"
         f"🎯 <b>Лимит:</b> {user_limit if user_limit > 0 else 'не задан'}₽\n"
         f"📅 <b>Месяц:</b> {get_current_month()}\n\n"
         "Выберите действие в меню:"
     )
 
     try:
-        await message.answer_photo(photo=MAIN_MENU_PHOTO, caption=caption, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await bot.send_photo(chat_id=chat_id, photo=MAIN_MENU_PHOTO, caption=caption, reply_markup=builder.as_markup(), parse_mode="HTML")
     except Exception:
-        await message.answer(caption, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await bot.send_message(chat_id=chat_id, text=caption, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-# --- ЛОГИКА ТРАНЗАКЦИЙ ---
+# --- ЛОГИКА ОПЕРАЦИЙ ---
 @dp.callback_query(F.data == "add_transaction")
 async def add_tx_start(cb: types.CallbackQuery, state: FSMContext):
     builder = InlineKeyboardBuilder()
-    builder.add(types.InlineKeyboardButton(text="📉 Расход", callback_data="type_expense"), 
+    builder.row(types.InlineKeyboardButton(text="📉 Расход", callback_data="type_expense"), 
                 types.InlineKeyboardButton(text="📈 Доход", callback_data="type_income"))
+    builder.row(types.InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="to_main"))
     await state.set_state(FinanceState.choosing_type)
-    await cb.message.answer("Выберите тип операции:", reply_markup=builder.as_markup())
+    await cb.message.edit_text("Выберите тип операции:", reply_markup=builder.as_markup())
     await cb.answer()
 
 @dp.callback_query(FinanceState.choosing_type, F.data.startswith("type_"))
@@ -137,18 +137,25 @@ async def add_tx_type(cb: types.CallbackQuery, state: FSMContext):
     t_type = "expense" if cb.data == "type_expense" else "income"
     await state.update_data(transaction_type=t_type)
     cats = EXPENSE_CATEGORIES if t_type == "expense" else INCOME_CATEGORIES
+    
     builder = InlineKeyboardBuilder()
-    for cat in cats: builder.add(types.InlineKeyboardButton(text=cat, callback_data=f"cat_{cat}"))
+    for cat in cats: 
+        builder.add(types.InlineKeyboardButton(text=cat, callback_data=f"cat_{cat}"))
     builder.adjust(2).row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="add_transaction"))
+    
     await state.set_state(FinanceState.choosing_category)
-    await cb.message.edit_text("Выберите категорию:", reply_markup=builder.as_markup())
+    await cb.message.edit_text(f"Тип: {'Расход' if t_type=='expense' else 'Доход'}\nВыберите категорию:", reply_markup=builder.as_markup())
 
 @dp.callback_query(FinanceState.choosing_category, F.data.startswith("cat_"))
 async def add_tx_cat(cb: types.CallbackQuery, state: FSMContext):
     category = cb.data.split("_")[1]
     await state.update_data(category=category)
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="⬅️ Назад к категориям", callback_data=f"type_{(await state.get_data())['transaction_type']}"))
+    
     await state.set_state(FinanceState.entering_amount)
-    await cb.message.edit_text(f"Выбрано: <b>{category}</b>\nВведите сумму (числом):", parse_mode="HTML")
+    await cb.message.edit_text(f"Категория: <b>{category}</b>\nВведите сумму (числом):", reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @dp.message(FinanceState.entering_amount)
 async def add_tx_amt(message: types.Message, state: FSMContext):
@@ -183,10 +190,76 @@ async def save_transaction(message: types.Message, state: FSMContext):
             (uid, d['transaction_type'], d['category'], d['amount'], now, month, d.get('comment', '—'))
         )
     await state.clear()
-    await message.answer(f"✅ Успешно сохранено!\n{d['category']}: {d['amount']}₽", 
-                         reply_markup=InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 В меню", callback_data="to_main")).as_markup())
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 В меню", callback_data="to_main"))
+    await message.answer(f"✅ Сохранено!\n{d['category']}: {d['amount']}₽", reply_markup=builder.as_markup())
 
-# --- СТАТИСТИКА ---
+# --- УСТАНОВКА ЛИМИТА ---
+@dp.callback_query(F.data == "set_limit_start")
+async def set_limit_start(cb: types.CallbackQuery, state: FSMContext):
+    await state.set_state(FinanceState.setting_limit)
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="⬅️ Отмена", callback_data="to_main"))
+    await cb.message.edit_text("🎯 Введите желаемый лимит трат на месяц:", reply_markup=builder.as_markup())
+    await cb.answer()
+
+@dp.message(FinanceState.setting_limit)
+async def set_limit_finish(m: types.Message, state: FSMContext):
+    try:
+        val = float(m.text.replace(",", "."))
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.cursor().execute("INSERT OR REPLACE INTO user_limits (user_id, monthly_limit) VALUES (?, ?)", (m.from_user.id, val))
+        await state.clear()
+        await m.answer(f"✅ Лимит {val}₽ успешно установлен!")
+        await send_main_menu(m.chat.id, m.from_user.id)
+    except: 
+        await m.answer("⚠️ Введите число.")
+
+# --- ПОДПИСКИ ---
+@dp.callback_query(F.data == "manage_subs")
+async def manage_subs(cb: types.CallbackQuery):
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id, name, amount, day FROM subscriptions WHERE user_id=?", (cb.from_user.id,))
+        subs = c.fetchall()
+    
+    res = "📅 <b>Ваши подписки:</b>\n\n"
+    builder = InlineKeyboardBuilder()
+    if not subs: res += "Список пуст."
+    else:
+        for sid, name, amt, day in subs:
+            res += f"▫️ {name}: {amt}₽ (день: {day})\n"
+            builder.row(types.InlineKeyboardButton(text=f"❌ Удалить {name}", callback_data=f"delsub_{sid}"))
+    
+    builder.row(types.InlineKeyboardButton(text="➕ Добавить", callback_data="add_sub_start"),
+                types.InlineKeyboardButton(text="⬅️ Меню", callback_data="to_main"))
+    await cb.message.edit_text(res, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data == "add_sub_start")
+async def add_sub_start(cb: types.CallbackQuery, state: FSMContext):
+    await state.set_state(FinanceState.adding_subscription)
+    await cb.message.edit_text("Введите название, сумму и день месяца через пробел\n(Пример: <i>Netflix 800 15</i>):", parse_mode="HTML")
+
+@dp.message(FinanceState.adding_subscription)
+async def add_sub_finish(m: types.Message, state: FSMContext):
+    try:
+        parts = m.text.split()
+        name, amt, day = parts[0], float(parts[1]), int(parts[2])
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.cursor().execute("INSERT INTO subscriptions (user_id, name, amount, day) VALUES (?,?,?,?)", (m.from_user.id, name, amt, day))
+        await state.clear()
+        await m.answer(f"✅ Подписка {name} добавлена!")
+        await send_main_menu(m.chat.id, m.from_user.id)
+    except:
+        await m.answer("⚠️ Ошибка. Формат: Название Сумма День")
+
+@dp.callback_query(F.data.startswith("delsub_"))
+async def del_sub(cb: types.CallbackQuery):
+    sid = cb.data.split("_")[1]
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.cursor().execute("DELETE FROM subscriptions WHERE id=?", (sid,))
+    await cb.answer("Подписка удалена")
+    await manage_subs(cb)
+
+# --- СТАТИСТИКА И АРХИВ ---
 @dp.callback_query(F.data == "show_stats")
 async def show_stats(cb: types.CallbackQuery):
     uid, month = cb.from_user.id, get_current_month()
@@ -201,120 +274,14 @@ async def show_stats(cb: types.CallbackQuery):
 
     inc, exp = totals.get('income', 0), totals.get('expense', 0)
     res = f"📊 <b>Статистика {month}</b>\n\n🟢 Доход: <code>{inc:.2f}₽</code>\n🔴 Расход: <code>{exp:.2f}₽</code>\n"
-    
     if limit > 0:
         p = (exp / limit * 100)
-        res += f"\n🎯 <b>Лимит трат:</b>\n{generate_progress_bar(p)} {p:.1f}%\n({exp:.0f} из {limit:.0f}₽)\n"
-    
+        res += f"\n🎯 <b>Лимит:</b>\n{generate_progress_bar(p)} {p:.1f}%\n"
     if exp > 0:
-        res += "\n<b>По категориям:</b>\n"
-        for cat, val in cats:
-            res += f"• {cat}: {val:.0f}₽ ({(val/exp*100):.1f}%)\n"
+        res += "\n<b>Категории:</b>\n"
+        for cat, val in cats: res += f"• {cat}: {val:.0f}₽\n"
             
-    await cb.message.answer(res, reply_markup=InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main")).as_markup(), parse_mode="HTML")
-    await cb.answer()
-
-@dp.callback_query(F.data == "show_misc_details")
-async def show_misc(cb: types.CallbackQuery):
-    uid, month = cb.from_user.id, get_current_month()
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT category, amount, comment, date FROM transactions WHERE user_id=? AND month_year=? AND (category LIKE '%Прочее%' OR category LIKE '%Другое%')", (uid, month))
-        items = c.fetchall()
-    res = "🔍 <b>Детализация 'Прочее':</b>\n\n" if items else "В 'Прочее' пока пусто."
-    for cat, amt, comm, dt in items: res += f"📅 {dt}\n💰 {amt}₽ — <i>{comm}</i>\n\n"
-    await cb.message.answer(res, reply_markup=InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main")).as_markup(), parse_mode="HTML")
-    await cb.answer()
-
-# --- ЛИМИТЫ И ПОДПИСКИ ---
-@dp.callback_query(F.data == "set_limit_start")
-async def set_limit_start(cb: types.CallbackQuery, state: FSMContext):
-    await state.set_state(FinanceState.setting_limit)
-    await cb.message.answer("🎯 Введите желаемый лимит трат на месяц:")
-    await cb.answer()
-
-@dp.message(FinanceState.setting_limit)
-async def set_limit_finish(m: types.Message, state: FSMContext):
-    try:
-        val = float(m.text.replace(",", "."))
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.cursor().execute("INSERT OR REPLACE INTO user_limits (user_id, monthly_limit) VALUES (?, ?)", (m.from_user.id, val))
-        await state.clear()
-        await m.answer(f"✅ Лимит {val}₽ сохранен!")
-    except: await m.answer("⚠️ Введите число.")
-
-@dp.callback_query(F.data == "manage_subs")
-async def manage_subs(cb: types.CallbackQuery):
-    uid = cb.from_user.id
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT id, name, amount, day FROM subscriptions WHERE user_id=?", (uid,))
-        subs = c.fetchall()
-    
-    res = "📅 <b>Регулярные платежи:</b>\n\n"
-    builder = InlineKeyboardBuilder()
-    if not subs: res += "Список пуст."
-    else:
-        for sid, name, amt, day in subs:
-            res += f"• {day} число: <b>{name}</b> — {amt}₽\n"
-            builder.row(types.InlineKeyboardButton(text=f"❌ Удалить {name}", callback_data=f"delsub_{sid}"))
-    builder.row(types.InlineKeyboardButton(text="➕ Добавить", callback_data="add_sub_start"),
-                types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await cb.message.answer(res, reply_markup=builder.as_markup(), parse_mode="HTML")
-    await cb.answer()
-
-@dp.callback_query(F.data == "add_sub_start")
-async def add_sub_start(cb: types.CallbackQuery, state: FSMContext):
-    await state.set_state(FinanceState.adding_subscription)
-    await cb.message.answer("Введите название и сумму через пробел:", parse_mode="HTML")
-    await cb.answer()
-
-@dp.message(FinanceState.adding_subscription)
-async def add_sub_finish(m: types.Message, state: FSMContext):
-    try:
-        parts = m.text.split()
-        name, amt = " ".join(parts[:-1]), float(parts[-1])
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.cursor().execute("INSERT INTO subscriptions (user_id, name, amount, day) VALUES (?,?,?,?)", (m.from_user.id, name, amt, datetime.now().day))
-        await state.clear()
-        await m.answer(f"✅ Подписка '{name}' добавлена.")
-    except: await m.answer("⚠️ Ошибка. Формат: Название Сумма")
-
-# --- СЛОТЫ ---
-@dp.callback_query(F.data == "play_game")
-async def play_game(cb: types.CallbackQuery):
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🎰 Крутить!", callback_data="spin_slots"),
-                                          types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await cb.message.answer("🎰 <b>Finance Slots</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
-    await cb.answer()
-
-@dp.callback_query(F.data == "spin_slots")
-async def spin_slots(cb: types.CallbackQuery):
-    syms = ["💎", "💰", "💵", "🍎", "🚗", "7️⃣"]
-    res = [random.choice(syms) for _ in range(3)]
-    res_str = f"| {' | '.join(res)} |"
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🎰 Еще!", callback_data="spin_slots"),
-                                          types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await cb.message.edit_text(f"🎰 РЕЗУЛЬТАТ:\n\n<code>{res_str}</code>", reply_markup=builder.as_markup(), parse_mode="HTML")
-
-# --- УДАЛЕНИЕ И АРХИВ ---
-@dp.callback_query(F.data == "manage_delete")
-async def manage_del(cb: types.CallbackQuery):
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT id, category, amount FROM transactions WHERE user_id=? ORDER BY id DESC LIMIT 5", (cb.from_user.id,))
-        items = c.fetchall()
-    builder = InlineKeyboardBuilder()
-    for tid, cat, amt in items: builder.row(types.InlineKeyboardButton(text=f"❌ {amt}₽ - {cat}", callback_data=f"del_{tid}"))
-    builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await cb.message.edit_text("Что удалить (последние 5)?", reply_markup=builder.as_markup())
-
-@dp.callback_query(F.data.startswith("del_"))
-async def process_del(cb: types.CallbackQuery):
-    tid = cb.data.split("_")[1]
-    with sqlite3.connect(DB_PATH) as conn: conn.cursor().execute("DELETE FROM transactions WHERE id=?", (tid,))
-    await cb.answer("Удалено!")
-    await manage_del(cb)
+    await cb.message.edit_text(res, reply_markup=InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main")).as_markup(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "show_archive")
 async def show_archive(cb: types.CallbackQuery):
@@ -322,47 +289,84 @@ async def show_archive(cb: types.CallbackQuery):
         c = conn.cursor()
         c.execute("SELECT DISTINCT month_year FROM transactions WHERE user_id=? ORDER BY id DESC", (cb.from_user.id,))
         months = [r[0] for r in c.fetchall()]
+    
+    if not months: return await cb.answer("Архив пуст")
     builder = InlineKeyboardBuilder()
     for m in months: builder.row(types.InlineKeyboardButton(text=f"📂 {m}", callback_data=f"arch_{m}"))
-    builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await cb.message.edit_text("Архив по месяцам:", reply_markup=builder.as_markup())
+    builder.row(types.InlineKeyboardButton(text="⬅️ Меню", callback_data="to_main"))
+    await cb.message.edit_text("Выберите месяц из архива:", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith("arch_"))
 async def show_arch_month(cb: types.CallbackQuery):
-    m = cb.data.split("_")[1]
+    month = cb.data.split("_")[1]
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
-        c.execute("SELECT type, SUM(amount) FROM transactions WHERE user_id=? AND month_year=? GROUP BY type", (cb.from_user.id, m))
-        totals = dict(c.fetchall())
-    res = f"📂 Архив: <b>{m}</b>\n\n📈 Доход: {totals.get('income',0):.0f}₽\n📉 Расход: {totals.get('expense',0):.0f}₽"
-    await cb.message.answer(res, reply_markup=InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main")).as_markup(), parse_mode="HTML")
+        c.execute("SELECT type, SUM(amount) FROM transactions WHERE user_id=? AND month_year=? GROUP BY type", (cb.from_user.id, month))
+        res = dict(c.fetchall())
+    inc, exp = res.get('income', 0), res.get('expense', 0)
+    text = f"📂 <b>Архив за {month}</b>\n\n📈 Доход: {inc}₽\n📉 Расход: {exp}₽\n💰 Баланс: {inc-exp}₽"
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="⬅️ К списку", callback_data="show_archive"))
+    await cb.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-# --- СИСТЕМНОЕ ---
+@dp.callback_query(F.data == "show_misc_details")
+async def show_misc(cb: types.CallbackQuery):
+    uid, month = cb.from_user.id, get_current_month()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT amount, comment, date FROM transactions WHERE user_id=? AND month_year=? AND (category LIKE '%Прочее%' OR category LIKE '%Другое%')", (uid, month))
+        items = c.fetchall()
+    res = "🔍 <b>Детали 'Прочего':</b>\n\n"
+    if not items: res += "Записей нет."
+    else:
+        for a, c, d in items: res += f"📍 {d}: {a}₽ ({c})\n"
+    await cb.message.edit_text(res, reply_markup=InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="⬅️ Меню", callback_data="to_main")).as_markup(), parse_mode="HTML")
+
+# --- УДАЛЕНИЕ ---
+@dp.callback_query(F.data == "manage_delete")
+async def manage_del(cb: types.CallbackQuery):
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id, category, amount FROM transactions WHERE user_id=? ORDER BY id DESC LIMIT 5", (cb.from_user.id,))
+        items = c.fetchall()
+    if not items: return await cb.answer("Операций не найдено")
+    builder = InlineKeyboardBuilder()
+    for tid, cat, amt in items: builder.row(types.InlineKeyboardButton(text=f"❌ {amt}₽ - {cat}", callback_data=f"delop_{tid}"))
+    builder.row(types.InlineKeyboardButton(text="⬅️ Меню", callback_data="to_main"))
+    await cb.message.edit_text("Выберите операцию для удаления:", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("delop_"))
+async def del_op(cb: types.CallbackQuery):
+    tid = cb.data.split("_")[1]
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.cursor().execute("DELETE FROM transactions WHERE id=?", (tid,))
+    await cb.answer("Удалено")
+    await manage_del(cb)
+
+# --- ИГРА ---
+@dp.callback_query(F.data == "play_game")
+async def play_game(cb: types.CallbackQuery):
+    await cb.message.answer_dice(emoji=random.choice(["🎲", "🎰", "🎯"]))
+    await cb.answer("Удачи!")
+
 @dp.callback_query(F.data == "to_main")
 async def to_main(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await start_cmd(cb.message, state)
     try: await cb.message.delete()
     except: pass
+    await send_main_menu(cb.message.chat.id, cb.from_user.id)
 
+# --- WEB SERVER & MAIN ---
 async def start_web():
-    """Веб-сервер для прохождения Port Check на хостингах"""
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Бот активен!"))
+    app.router.add_get("/", lambda r: web.Response(text="Bot is active!"))
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
     await web.TCPSite(runner, "0.0.0.0", port).start()
-    logger.info(f"Веб-сервер запущен на порту {port}")
 
 async def main():
-    # 1. Запуск веб-сервера
     await start_web()
-    
-    # 2. Запуск фонового пинга "Анти-сон"
     asyncio.create_task(keep_alive())
-    
-    # 3. Запуск Telegram бота
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
