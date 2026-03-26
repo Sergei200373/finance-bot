@@ -125,15 +125,37 @@ async def process_comment(message: types.Message, state: FSMContext):
 
 async def save_tx(message: types.Message, state: FSMContext):
     d = await state.get_data()
+    uid = message.from_user.id
+    cur_m = get_current_month()
+    
     with sqlite3.connect(DB_PATH) as conn:
-        conn.cursor().execute(
+        cursor = conn.cursor()
+        # Сохраняем операцию
+        cursor.execute(
             "INSERT INTO transactions (user_id, type, category, amount, date, month_year, comment) VALUES (?,?,?,?,?,?,?)",
-            (message.from_user.id, d['transaction_type'], d['category'], d['amount'], 
-             datetime.now().strftime("%Y-%m-%d %H:%M"), get_current_month(), d.get('comment'))
+            (uid, d['transaction_type'], d['category'], d['amount'], 
+             datetime.now().strftime("%Y-%m-%d %H:%M"), cur_m, d.get('comment'))
         )
+        # Считаем итог по этой категории за месяц
+        cursor.execute(
+            "SELECT SUM(amount) FROM transactions WHERE user_id=? AND category=? AND month_year=?",
+            (uid, d['category'], cur_m)
+        )
+        cat_total = cursor.fetchone()[0] or 0
+        
     await state.clear()
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await message.answer("✅ Запись сохранена в <b>МаниХелпер</b>!", reply_markup=builder.as_markup(), parse_mode="HTML")
+    
+    # Формируем расширенное подтверждение
+    await message.answer(
+        f"✅ <b>Запись сохранена!</b>\n\n"
+        f"🥷🏿 <b>МаниХелпер</b> сообщает:\n"
+        f"Категория: <b>{d['category']}</b>\n"
+        f"Сумма: <code>{d['amount']:.2f}₽</code>\n"
+        f"Всего в этой категории за месяц: <b>{cat_total:.2f}₽</b>",
+        reply_markup=builder.as_markup(), 
+        parse_mode="HTML"
+    )
 
 @dp.callback_query(F.data == "show_stats")
 async def show_stats(callback_query: types.CallbackQuery):
@@ -225,7 +247,7 @@ async def manage_delete(callback_query: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
     await callback_query.message.edit_text("Выберите операцию для удаления (последние 10):", reply_markup=builder.as_markup())
 
-@dp.callback_query(F.startswith("del_"))
+@dp.callback_query(F.data.startswith("del_"))
 async def process_delete(callback_query: types.CallbackQuery):
     tid = callback_query.data.split("_")[1]
     with sqlite3.connect(DB_PATH) as conn:
@@ -257,17 +279,17 @@ async def main():
         try:
             # Сбрасываем вебхуки и старые обновления перед стартом
             await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Бот запускается...")
+            logger.info("МаниХелпер запускается...")
             await dp.start_polling(bot)
         except TelegramConflictError:
-            logger.warning("Обнаружен конфликт (запущен другой экземпляр). Повтор через 10 секунд...")
-            await asyncio.sleep(10)
+            logger.warning("Конфликт сессий! Ждем завершения старого процесса (15 сек)...")
+            await asyncio.sleep(15)
         except Exception as e:
-            logger.error(f"Критическая ошибка: {e}")
+            logger.error(f"Ошибка в основном цикле: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Бот остановлен вручную")
+        logger.info("Бот остановлен")
