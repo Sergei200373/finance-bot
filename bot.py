@@ -54,7 +54,7 @@ def generate_progress_bar(percent, length=10):
     filled_length = int(length * max(0, min(100, percent)) / 100)
     return '🔵' * filled_length + '⚪' * (length - filled_length)
 
-# --- ОБРАБОТЧИКИ ---
+# --- ОБРАБОТЧИКИ МЕНЮ ---
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
@@ -78,7 +78,7 @@ async def start_cmd(message: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# --- ЛОГИКА ИГРЫ ---
+# --- ЛОГИКА ИГРЫ (СЛОТЫ) ---
 @dp.callback_query(F.data == "play_game")
 async def game_start(callback: types.CallbackQuery):
     builder = InlineKeyboardBuilder()
@@ -97,7 +97,7 @@ async def game_start(callback: types.CallbackQuery):
 async def spin_slots(callback: types.CallbackQuery):
     symbols = ["💎", "💰", "💵", "🍎", "🚗", "7️⃣"]
     
-    # Эффект вращения (визуальный)
+    # Анимация вращения
     for _ in range(3):
         fake_spin = f"| {random.choice(symbols)} | {random.choice(symbols)} | {random.choice(symbols)} |"
         try:
@@ -106,7 +106,6 @@ async def spin_slots(callback: types.CallbackQuery):
         except:
             pass
 
-    # Финальный результат
     res = [random.choice(symbols) for _ in range(3)]
     res_str = f"| {' | '.join(res)} |"
     
@@ -129,7 +128,7 @@ async def spin_slots(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
 
-# --- ОСТАЛЬНЫЕ ФУНКЦИИ (БЕЗ ИЗМЕНЕНИЙ) ---
+# --- ФИНАНСОВЫЕ ОПЕРАЦИИ ---
 
 @dp.callback_query(F.data == "add_transaction")
 async def add_transaction_start(callback_query: types.CallbackQuery, state: FSMContext):
@@ -167,9 +166,10 @@ async def process_amount(message: types.Message, state: FSMContext):
         return
     await state.update_data(amount=amount)
     data = await state.get_data()
+    # Если категория "Прочее" или "Другое", запрашиваем комментарий
     if "Прочее" in data['category'] or "Другое" in data['category']:
         await state.set_state(FinanceState.entering_comment)
-        await message.answer("📝 Напишите описание:")
+        await message.answer("📝 Напишите описание для этой операции:")
     else:
         await save_tx(message, state)
 
@@ -209,6 +209,8 @@ async def save_tx(message: types.Message, state: FSMContext):
     msg_text += f"Всего в категории за месяц: <b>{cat_total:.2f}₽</b>"
     
     await message.answer(msg_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+# --- СТАТИСТИКА И ИНСТРУМЕНТЫ ---
 
 @dp.callback_query(F.data == "show_stats")
 async def show_stats(callback_query: types.CallbackQuery):
@@ -308,7 +310,7 @@ async def to_main(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await start_cmd(cb.message, state)
 
-# --- WEB SERVER (For Render Port Binding) ---
+# --- WEB SERVER (Для Render) ---
 async def handle(request): 
     return web.Response(text="Finance Pro: Health Check OK", content_type='text/plain')
 
@@ -320,7 +322,7 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"СЕРВЕР: Слушаем порт {port}")
+    logger.info(f"СЕРВЕР: Запущен на порту {port}")
 
 async def main():
     await start_web_server()
@@ -330,7 +332,7 @@ async def main():
             await bot.delete_webhook(drop_pending_updates=True)
             await dp.start_polling(bot, skip_updates=True)
         except TelegramConflictError:
-            logger.error("КОНФЛИКТ: Ждем 15 секунд...")
+            logger.error("КОНФЛИКТ: Обнаружен другой экземпляр бота. Ждем 15 секунд...")
             await asyncio.sleep(15)
         except Exception as e:
             logger.error(f"СБОЙ: {e}")
