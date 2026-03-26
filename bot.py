@@ -17,7 +17,7 @@ API_TOKEN = "7799961207:AAEPNytcZZ8iseximsxmSDD6j-IrSW25hD8"
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - [SYSTEM] - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def get_current_month():
     return datetime.now().strftime("%m.%Y")
 
 def generate_progress_bar(percent, length=10):
-    filled_length = int(length * percent / 100)
+    filled_length = int(length * max(0, min(100, percent)) / 100)
     return '🔵' * filled_length + '⚪' * (length - filled_length)
 
 # --- ОБРАБОТЧИКИ ---
@@ -67,9 +67,9 @@ async def start_cmd(message: types.Message, state: FSMContext):
     builder.row(types.InlineKeyboardButton(text="🗑 Удалить операцию", callback_data="manage_delete"))
     
     await message.answer(
-        f"🥷🏿 <b>МаниХелпер</b>\n"
+        f"🥷🏿 <b>МаниХелпер [v2.1]</b>\n"
         f"Привет, {user_name}!\n"
-        f"Ваш личный финансовый помощник готов к работе.\n\n"
+        f"Ваш финансовый учет в порядке.\n\n"
         f"Текущий месяц: <code>{get_current_month()}</code>\n\n"
         "Выберите действие:", 
         reply_markup=builder.as_markup(), 
@@ -114,7 +114,7 @@ async def process_amount(message: types.Message, state: FSMContext):
     data = await state.get_data()
     if "Прочее" in data['category'] or "Другое" in data['category']:
         await state.set_state(FinanceState.entering_comment)
-        await message.answer("📝 Напишите описание (за что именно):")
+        await message.answer("📝 Напишите описание:")
     else:
         await save_tx(message, state)
 
@@ -147,15 +147,11 @@ async def save_tx(message: types.Message, state: FSMContext):
     
     msg_text = (
         f"✅ <b>Запись сохранена!</b>\n\n"
-        f"🥷🏿 <b>МаниХелпер</b> сообщает:\n"
         f"Категория: <b>{d['category']}</b>\n"
         f"Сумма: <code>{d['amount']:.2f}₽</code>\n"
     )
-    
-    if comment:
-        msg_text += f"Описание: <i>{comment}</i>\n"
-        
-    msg_text += f"Всего в этой категории за месяц: <b>{cat_total:.2f}₽</b>"
+    if comment: msg_text += f"Описание: <i>{comment}</i>\n"
+    msg_text += f"Всего в категории за месяц: <b>{cat_total:.2f}₽</b>"
     
     await message.answer(msg_text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -189,12 +185,9 @@ async def show_misc_details(callback_query: types.CallbackQuery):
         c.execute("SELECT category, amount, comment, date FROM transactions WHERE user_id=? AND month_year=? AND (category LIKE '%Прочее%' OR category LIKE '%Другое%')", (uid, cur_m))
         items = c.fetchall()
     
-    if not items:
-        res = "В категориях 'Прочее/Другое' пока нет записей."
-    else:
-        res = "🔍 <b>Детализация 'Прочее':</b>\n\n"
-        for cat, amt, comm, dt in items:
-            res += f"📍 {dt}\n💰 {amt}₽ - <i>{comm if comm else 'Без описания'}</i>\n\n"
+    res = "🔍 <b>Детализация 'Прочее':</b>\n\n" if items else "В 'Прочее' пока пусто."
+    for cat, amt, comm, dt in items:
+        res += f"📍 {dt}\n💰 {amt}₽ - <i>{comm if comm else 'Без описания'}</i>\n\n"
             
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
     await callback_query.message.edit_text(res, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -212,10 +205,9 @@ async def show_archive(callback_query: types.CallbackQuery):
         return
 
     builder = InlineKeyboardBuilder()
-    for m in months:
-        builder.row(types.InlineKeyboardButton(text=f"📂 {m}", callback_data=f"archive_{m}"))
+    for m in months: builder.row(types.InlineKeyboardButton(text=f"📂 {m}", callback_data=f"archive_{m}"))
     builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await callback_query.message.edit_text("Выберите месяц из архива:", reply_markup=builder.as_markup())
+    await callback_query.message.edit_text("Выберите месяц:", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith("archive_"))
 async def show_archive_month(callback_query: types.CallbackQuery):
@@ -225,8 +217,7 @@ async def show_archive_month(callback_query: types.CallbackQuery):
         c = conn.cursor()
         c.execute("SELECT type, SUM(amount) FROM transactions WHERE user_id=? AND month_year=? GROUP BY type", (uid, month))
         totals = dict(c.fetchall())
-        inc, exp = totals.get('income', 0), totals.get('expense', 0)
-    
+    inc, exp = totals.get('income', 0), totals.get('expense', 0)
     res = f"📂 Архив: <b>{month}</b>\n\n📈 Доход: {inc:.2f}₽\n📉 Расход: {exp:.2f}₽\n💰 Итог: {inc-exp:.2f}₽"
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="⬅️ К списку", callback_data="show_archive"))
     await callback_query.message.edit_text(res, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -240,14 +231,14 @@ async def manage_delete(callback_query: types.CallbackQuery):
         items = c.fetchall()
     
     if not items:
-        await callback_query.answer("Нет операций для удаления.")
+        await callback_query.answer("Нет операций.")
         return
 
     builder = InlineKeyboardBuilder()
     for tid, cat, amt, dt in items:
-        builder.row(types.InlineKeyboardButton(text=f"❌ {amt}₽ - {cat} ({dt})", callback_data=f"del_{tid}"))
+        builder.row(types.InlineKeyboardButton(text=f"❌ {amt}₽ - {cat}", callback_data=f"del_{tid}"))
     builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
-    await callback_query.message.edit_text("Выберите операцию для удаления (последние 10):", reply_markup=builder.as_markup())
+    await callback_query.message.edit_text("Что удалить?", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith("del_"))
 async def process_delete(callback_query: types.CallbackQuery):
@@ -262,8 +253,8 @@ async def to_main(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await start_cmd(cb.message, state)
 
-# --- WEB SERVER FOR RENDER ---
-async def handle(request): return web.Response(text="Bot is alive")
+# --- WEB SERVER ---
+async def handle(request): return web.Response(text="Bot is running")
 async def start_web():
     app = web.Application()
     app.router.add_get("/", handle)
@@ -271,26 +262,24 @@ async def start_web():
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
     await web.TCPSite(runner, "0.0.0.0", port).start()
-    logger.info(f"Веб-сервер запущен на порту {port}")
 
 async def main():
     asyncio.create_task(start_web())
-    
     while True:
         try:
-            # Очищаем очередь обновлений при старте
+            logger.info("СИСТЕМА: Подключение к Telegram...")
+            # Удаляем старый вебхук и ОЧИЩАЕМ очередь сообщений
             await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("МаниХелпер подключается к Telegram...")
             await dp.start_polling(bot, skip_updates=True)
         except TelegramConflictError:
-            logger.warning("Конфликт! Другой бот запущен. Ждем 15 секунд...")
-            await asyncio.sleep(15)
-        except Exception as e:
-            logger.error(f"Критическая ошибка: {e}")
+            logger.error("КОНФЛИКТ: Бот запущен в другом месте. Ждем 10с...")
             await asyncio.sleep(10)
+        except Exception as e:
+            logger.error(f"СБОЙ: {e}")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Бот остановлен")
+        logger.info("ВЫКЛЮЧЕНО")
