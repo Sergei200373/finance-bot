@@ -1,27 +1,26 @@
-import asyncio
-import logging
-import sqlite3
-import os
-from datetime import datetime
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.exceptions import TelegramBadRequest
-from aiohttp import web  # Добавлено для веб-сервера
+# --- ОБРАБОТЧИКИ ---
 
-# --- КОНФИГУРАЦИЯ ---
-API_TOKEN = "7799961207:AAEPNytcZZ8iseximsxmSDD6j-IrSW25hD8"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-bot = Bot(token=API_TOKEN)
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_name = message.from_user.first_name
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="➕ Добавить операцию", callback_data="add_transaction"))
+    builder.row(types.InlineKeyboardButton(text="📊 Статистика месяца", callback_data="show_stats"))
+    builder.row(types.InlineKeyboardButton(text="🔍 Детализация (Прочее)", callback_data="show_misc_details"))
+    builder.row(types.InlineKeyboardButton(text="📜 Архив месяцев", callback_data="show_archive"))
+    builder.row(types.InlineKeyboardButton(text="🗑 Удалить операцию", callback_data="manage_delete"))
+    
+    # Здесь мы обновили название на МаниХелпер🥷🏿
+    await message.answer(
+        f"🥷🏿 <b>МаниХелпер</b>\n"
+        f"Привет, {user_name}!\n"
+        f"Ваш личный финансовый помощник готов к работе.\n\n"
+        f"Текущий месяц: <code>{get_current_month()}</code>\n\n"
+        "Выберите действие:", 
+        reply_markup=builder.as_markup(), 
+        parse_mode="HTML"
+    )bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # Категории
