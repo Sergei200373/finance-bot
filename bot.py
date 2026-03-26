@@ -131,13 +131,11 @@ async def save_tx(message: types.Message, state: FSMContext):
     
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        # Сохраняем операцию
         cursor.execute(
             "INSERT INTO transactions (user_id, type, category, amount, date, month_year, comment) VALUES (?,?,?,?,?,?,?)",
             (uid, d['transaction_type'], d['category'], d['amount'], 
              datetime.now().strftime("%Y-%m-%d %H:%M"), cur_m, comment)
         )
-        # Считаем итог по этой категории за месяц
         cursor.execute(
             "SELECT SUM(amount) FROM transactions WHERE user_id=? AND category=? AND month_year=?",
             (uid, d['category'], cur_m)
@@ -147,7 +145,6 @@ async def save_tx(message: types.Message, state: FSMContext):
     await state.clear()
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
     
-    # Формируем расширенное подтверждение с учетом комментария
     msg_text = (
         f"✅ <b>Запись сохранена!</b>\n\n"
         f"🥷🏿 <b>МаниХелпер</b> сообщает:\n"
@@ -277,20 +274,20 @@ async def start_web():
     logger.info(f"Веб-сервер запущен на порту {port}")
 
 async def main():
-    # Запуск веб-сервера в фоне
     asyncio.create_task(start_web())
     
     while True:
         try:
+            # Очищаем очередь обновлений при старте
             await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("МаниХелпер запускается...")
-            await dp.start_polling(bot)
+            logger.info("МаниХелпер подключается к Telegram...")
+            await dp.start_polling(bot, skip_updates=True)
         except TelegramConflictError:
-            logger.warning("Конфликт сессий! Ждем завершения старого процесса (20 сек)...")
-            await asyncio.sleep(20)
+            logger.warning("Конфликт! Другой бот запущен. Ждем 15 секунд...")
+            await asyncio.sleep(15)
         except Exception as e:
-            logger.error(f"Ошибка в основном цикле: {e}")
-            await asyncio.sleep(5)
+            logger.error(f"Критическая ошибка: {e}")
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     try:
