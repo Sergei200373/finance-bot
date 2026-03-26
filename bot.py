@@ -17,8 +17,8 @@ API_TOKEN = "7799961207:AAEPNytcZZ8iseximsxmSDD6j-IrSW25hD8"
 # Используйте корректный file_id фото или оставьте заглушку
 MAIN_MENU_PHOTO = "AgACAgIAAxkBAAEY..." 
 
-# URL приложения для механизма анти-сна (Keep Alive)
-APP_URL = os.environ.get("APP_URL", "")
+# Прямо указываем твой URL для механизма анти-сна как запасной вариант
+APP_URL = os.environ.get("APP_URL", "https://finance-bot-8zns.onrender.com")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,19 +72,24 @@ def generate_progress_bar(percent, length=10):
 # --- АНТИ-СОН (KEEP ALIVE) ---
 async def keep_alive():
     if not APP_URL:
-        logger.warning("KEEP_ALIVE: APP_URL не задан. Анти-сон отключен.")
+        logger.warning("KEEP_ALIVE: APP_URL не задан и не найден в коде. Анти-сон отключен.")
         return
         
-    await asyncio.sleep(30)
+    logger.info(f"KEEP_ALIVE: Запускаю пинг на адрес {APP_URL} каждые 14 минут...")
+    await asyncio.sleep(30) # Ждем 30 секунд после запуска, чтобы веб-сервер точно поднялся
+    
     while True:
         try:
             async with ClientSession() as session:
                 async with session.get(APP_URL, timeout=10) as resp:
                     if resp.status == 200:
-                        logger.info("KEEP_ALIVE: Пинг успешен.")
+                        logger.info("KEEP_ALIVE: Внутренний пинг успешен.")
+                    else:
+                        logger.warning(f"KEEP_ALIVE: Сервер ответил статусом {resp.status}")
         except Exception as e:
-            logger.error(f"KEEP_ALIVE: Ошибка пинга: {e}")
-        await asyncio.sleep(600)
+            logger.error(f"KEEP_ALIVE: Ошибка внутреннего пинга: {e}")
+        # Задержка 14 минут (840 секунд) - как раз перед отключением Render (15 минут)
+        await asyncio.sleep(840)
 
 # --- ГЛАВНОЕ МЕНЮ ---
 @dp.message(Command("start"))
