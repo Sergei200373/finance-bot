@@ -10,12 +10,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.exceptions import TelegramBadRequest
+from aiohttp import web  # Добавлено для веб-сервера
 
 # --- КОНФИГУРАЦИЯ ---
-# Вставьте сюда ваш токен от @BotFather
 API_TOKEN = "7799961207:AAEPNytcZZ8iseximsxmSDD6j-IrSW25hD8"
 
-# Настройка логирования для отслеживания работы на сервере
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Категории расходов
+# Категории
 EXPENSE_CATEGORIES = [
     "🍎 Продукты", "☕️ Кафе/Рестораны", 
     "🚗 Транспорт", "🏠 Жилье/ЖКХ", 
@@ -34,7 +33,6 @@ EXPENSE_CATEGORIES = [
     "🎮 Досуг", "🛒 Прочее"
 ]
 
-# Категории доходов
 INCOME_CATEGORIES = [
     "💰 Зарплата", "💵 Аванс", 
     "📈 Инвестиции", "💳 Фриланс", 
@@ -52,7 +50,6 @@ class FinanceState(StatesGroup):
 DB_PATH = 'finance_manager.db'
 
 def init_db():
-    """Инициализация базы данных и создание таблиц"""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -72,14 +69,12 @@ def init_db():
         logger.error(f"Database initialization error: {e}")
         return None
 
-# Инициализируем БД при старте
 db_conn = init_db()
 
 def get_current_month():
     return datetime.now().strftime("%m.%Y")
 
 def generate_progress_bar(percent, length=10):
-    """Генерирует текстовый индикатор прогресса"""
     filled_length = int(length * percent / 100)
     bar = '🔵' * filled_length + '⚪' * (length - filled_length)
     return bar
@@ -141,7 +136,7 @@ async def enter_amount_prompt(callback_query: types.CallbackQuery, state: FSMCon
     await state.set_state(FinanceState.entering_amount)
     await callback_query.message.edit_text(
         f"Категория: <b>{category}</b>\n\n"
-        "✍️ <b>Введите сумму числом</b>\n(например: 500 или 1250.50):", 
+        f"✍️ <b>Введите сумму числом</b>\n(например: 500 или 1250.50):", 
         parse_mode="HTML"
     )
 
@@ -229,10 +224,10 @@ async def show_stats(callback_query: types.CallbackQuery):
         cats_data = cursor.fetchall()
 
     res = (f"📅 <b>Итоги за {current_m}:</b>\n\n"
-           f"📈 Доход: <code>{income:.2f} ₽</code>\n"
-           f"📉 Расход: <code>{expense:.2f} ₽</code>\n"
-           f"💰 Остаток: <b>{income - expense:.2f} ₽</b>\n\n"
-           f"📊 <b>Распределение трат:</b>\n")
+            f"📈 Доход: <code>{income:.2f} ₽</code>\n"
+            f"📉 Расход: <code>{expense:.2f} ₽</code>\n"
+            f"💰 Остаток: <b>{income - expense:.2f} ₽</b>\n\n"
+            f"📊 <b>Распределение трат:</b>\n")
     
     if not cats_data:
         res += "<i>Записей пока нет</i>"
@@ -355,10 +350,31 @@ async def to_main_menu(callback_query: types.CallbackQuery, state: FSMContext):
     await start_cmd(callback_query.message, state)
     await callback_query.answer()
 
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (Новое) ---
+async def handle_health(request):
+    return web.Response(text="Bot is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Web server started on port {port}")
+
+# --- ЗАПУСК ---
 async def main():
-    logger.info("Bot is starting...")
+    # Запуск веб-сервера в фоне
+    asyncio.create_task(start_web_server())
+    
+    logger.info("Bot is starting polling...")
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     try:
