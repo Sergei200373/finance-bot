@@ -9,7 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramConflictError
 from aiohttp import web
 
 # --- КОНФИГУРАЦИЯ ---
@@ -225,7 +225,7 @@ async def manage_delete(callback_query: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
     await callback_query.message.edit_text("Выберите операцию для удаления (последние 10):", reply_markup=builder.as_markup())
 
-@dp.callback_query(F.data.startswith("del_"))
+@dp.callback_query(F.startswith("del_"))
 async def process_delete(callback_query: types.CallbackQuery):
     tid = callback_query.data.split("_")[1]
     with sqlite3.connect(DB_PATH) as conn:
@@ -249,9 +249,25 @@ async def start_web():
     await web.TCPSite(runner, "0.0.0.0", port).start()
 
 async def main():
+    # Запуск веб-сервера в фоне
     asyncio.create_task(start_web())
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    
+    # Пытаемся запустить бота с обработкой конфликтов
+    while True:
+        try:
+            # Сбрасываем вебхуки и старые обновления перед стартом
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Бот запускается...")
+            await dp.start_polling(bot)
+        except TelegramConflictError:
+            logger.warning("Обнаружен конфликт (запущен другой экземпляр). Повтор через 10 секунд...")
+            await asyncio.sleep(10)
+        except Exception as e:
+            logger.error(f"Критическая ошибка: {e}")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен вручную")
