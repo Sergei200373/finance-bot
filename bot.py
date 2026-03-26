@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sqlite3
 import os
+import random
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -65,16 +66,70 @@ async def start_cmd(message: types.Message, state: FSMContext):
     builder.row(types.InlineKeyboardButton(text="🔍 Детализация (Прочее)", callback_data="show_misc_details"))
     builder.row(types.InlineKeyboardButton(text="📜 Архив месяцев", callback_data="show_archive"))
     builder.row(types.InlineKeyboardButton(text="🗑 Удалить операцию", callback_data="manage_delete"))
+    builder.row(types.InlineKeyboardButton(text="🕹 Мини-игра", callback_data="play_game"))
     
     await message.answer(
-        f"🥷🏿 <b>МаниХелпер [v2.1]</b>\n"
+        f"🥷🏿 <b>Finance Pro [v2.4]</b>\n"
         f"Привет, {user_name}!\n"
-        f"Ваш финансовый учет в порядке.\n\n"
+        f"Статус системы: <b>ONLINE</b>\n\n"
         f"Текущий месяц: <code>{get_current_month()}</code>\n\n"
         "Выберите действие:", 
         reply_markup=builder.as_markup(), 
         parse_mode="HTML"
     )
+
+# --- ЛОГИКА ИГРЫ ---
+@dp.callback_query(F.data == "play_game")
+async def game_start(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🎰 Крутить!", callback_data="spin_slots"))
+    builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
+    
+    await callback.message.edit_text(
+        "🎰 <b>Добро пожаловать в Finance Slots!</b>\n\n"
+        "Испытай свою удачу. Выбей 3 одинаковых символа, чтобы сорвать джекпот!\n\n"
+        "<i>Игра ведется на интерес</i> 😉",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data == "spin_slots")
+async def spin_slots(callback: types.CallbackQuery):
+    symbols = ["💎", "💰", "💵", "🍎", "🚗", "7️⃣"]
+    
+    # Эффект вращения (визуальный)
+    for _ in range(3):
+        fake_spin = f"| {random.choice(symbols)} | {random.choice(symbols)} | {random.choice(symbols)} |"
+        try:
+            await callback.message.edit_text(f"🎰 Вращаем...\n\n{fake_spin}")
+            await asyncio.sleep(0.3)
+        except:
+            pass
+
+    # Финальный результат
+    res = [random.choice(symbols) for _ in range(3)]
+    res_str = f"| {' | '.join(res)} |"
+    
+    if res[0] == res[1] == res[2]:
+        win_text = "🔥 <b>ДЖЕКПОТ! Вы сорвали куш!</b> 🔥"
+    elif res[0] == res[1] or res[1] == res[2] or res[0] == res[2]:
+        win_text = "✨ <b>Неплохо! Две в ряд!</b> ✨"
+    else:
+        win_text = "😅 Сегодня не повезло, попробуй еще раз!"
+
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🎰 Еще раз!", callback_data="spin_slots"))
+    builder.row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
+
+    await callback.message.edit_text(
+        f"🎰 <b>РЕЗУЛЬТАТ:</b>\n\n"
+        f"<code>{res_str}</code>\n\n"
+        f"{win_text}",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+
+# --- ОСТАЛЬНЫЕ ФУНКЦИИ (БЕЗ ИЗМЕНЕНИЙ) ---
 
 @dp.callback_query(F.data == "add_transaction")
 async def add_transaction_start(callback_query: types.CallbackQuery, state: FSMContext):
@@ -253,27 +308,30 @@ async def to_main(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await start_cmd(cb.message, state)
 
-# --- WEB SERVER ---
-async def handle(request): return web.Response(text="Bot is running")
-async def start_web():
+# --- WEB SERVER (For Render Port Binding) ---
+async def handle(request): 
+    return web.Response(text="Finance Pro: Health Check OK", content_type='text/plain')
+
+async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
-    await web.TCPSite(runner, "0.0.0.0", port).start()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"СЕРВЕР: Слушаем порт {port}")
 
 async def main():
-    asyncio.create_task(start_web())
+    await start_web_server()
     while True:
         try:
             logger.info("СИСТЕМА: Подключение к Telegram...")
-            # Удаляем старый вебхук и ОЧИЩАЕМ очередь сообщений
             await bot.delete_webhook(drop_pending_updates=True)
             await dp.start_polling(bot, skip_updates=True)
         except TelegramConflictError:
-            logger.error("КОНФЛИКТ: Бот запущен в другом месте. Ждем 10с...")
-            await asyncio.sleep(10)
+            logger.error("КОНФЛИКТ: Ждем 15 секунд...")
+            await asyncio.sleep(15)
         except Exception as e:
             logger.error(f"СБОЙ: {e}")
             await asyncio.sleep(5)
