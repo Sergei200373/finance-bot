@@ -127,6 +127,7 @@ async def save_tx(message: types.Message, state: FSMContext):
     d = await state.get_data()
     uid = message.from_user.id
     cur_m = get_current_month()
+    comment = d.get('comment')
     
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -134,7 +135,7 @@ async def save_tx(message: types.Message, state: FSMContext):
         cursor.execute(
             "INSERT INTO transactions (user_id, type, category, amount, date, month_year, comment) VALUES (?,?,?,?,?,?,?)",
             (uid, d['transaction_type'], d['category'], d['amount'], 
-             datetime.now().strftime("%Y-%m-%d %H:%M"), cur_m, d.get('comment'))
+             datetime.now().strftime("%Y-%m-%d %H:%M"), cur_m, comment)
         )
         # Считаем итог по этой категории за месяц
         cursor.execute(
@@ -146,16 +147,20 @@ async def save_tx(message: types.Message, state: FSMContext):
     await state.clear()
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Меню", callback_data="to_main"))
     
-    # Формируем расширенное подтверждение
-    await message.answer(
+    # Формируем расширенное подтверждение с учетом комментария
+    msg_text = (
         f"✅ <b>Запись сохранена!</b>\n\n"
         f"🥷🏿 <b>МаниХелпер</b> сообщает:\n"
         f"Категория: <b>{d['category']}</b>\n"
         f"Сумма: <code>{d['amount']:.2f}₽</code>\n"
-        f"Всего в этой категории за месяц: <b>{cat_total:.2f}₽</b>",
-        reply_markup=builder.as_markup(), 
-        parse_mode="HTML"
     )
+    
+    if comment:
+        msg_text += f"Описание: <i>{comment}</i>\n"
+        
+    msg_text += f"Всего в этой категории за месяц: <b>{cat_total:.2f}₽</b>"
+    
+    await message.answer(msg_text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "show_stats")
 async def show_stats(callback_query: types.CallbackQuery):
@@ -267,23 +272,22 @@ async def start_web():
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     await web.TCPSite(runner, "0.0.0.0", port).start()
+    logger.info(f"Веб-сервер запущен на порту {port}")
 
 async def main():
     # Запуск веб-сервера в фоне
     asyncio.create_task(start_web())
     
-    # Пытаемся запустить бота с обработкой конфликтов
     while True:
         try:
-            # Сбрасываем вебхуки и старые обновления перед стартом
             await bot.delete_webhook(drop_pending_updates=True)
             logger.info("МаниХелпер запускается...")
             await dp.start_polling(bot)
         except TelegramConflictError:
-            logger.warning("Конфликт сессий! Ждем завершения старого процесса (15 сек)...")
-            await asyncio.sleep(15)
+            logger.warning("Конфликт сессий! Ждем завершения старого процесса (20 сек)...")
+            await asyncio.sleep(20)
         except Exception as e:
             logger.error(f"Ошибка в основном цикле: {e}")
             await asyncio.sleep(5)
