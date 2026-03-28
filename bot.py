@@ -13,7 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web, ClientSession
 
 # --- CONFIGURATION ---
-API_TOKEN = "7799961207:AAEPNytcZZ8iseximsxmSDD6j-IrSW25hD8"
+API_TOKEN = "7799961207:AAHSaptoQj85UPIxLNO41xMbenK5jN6rwg0"
 # Используйте корректный file_id фото или оставьте заглушку
 MAIN_MENU_PHOTO = "AgACAgIAAxkBAAEY..." 
 
